@@ -29,6 +29,7 @@ source-repository head
 library
   hs-source-dirs:      src
   exposed-modules:     Smuggler.Anns
+                       Smuggler.Compress
                        Smuggler.Loc
                        Smuggler.Parser
                        Smuggler.Plugin
@@ -88,6 +89,7 @@ test-suite smuggler-test
                        Test.BoolBoolUnused
                        Test.BoolPartlyUsedFirst
                        Test.BoolPartlyUsedLast
+                       Test.CompressImports
                        Test.ConstructorsUnused
                        Test.Dummy
                        Test.ImplicitImportUsed

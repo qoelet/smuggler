@@ -10,10 +10,12 @@ import HashStore (hashStore)
 import Language.Haskell.GHC.ExactPrint (exactPrint)
 import System.FilePath ((-<.>))
 
-import HscTypes (ModSummary (..))
+import HscTypes (ImportedBy (..), ModSummary (..))
 import HsExtension (GhcRn)
 import HsImpExp (IE (..), IEWrappedName (..), ImportDecl (..), LIE, LIEWrappedName)
+import HsSyn (HsModule (..))
 import IOEnv (readMutVar)
+import Module (Module (..), ModuleName, moduleEnvToList, moduleName)
 import Name (Name, nameSrcSpan)
 import Plugins (CommandLineOption, Plugin (..), defaultPlugin)
 import PrelNames (pRELUDE_NAME)
@@ -21,9 +23,10 @@ import RdrName (GlobalRdrElt)
 import RnNames (ImportDeclUsage, findImportUsage)
 import SrcLoc (GenLocated (..), SrcSpan (..), srcSpanEndCol, srcSpanEndLine,
                srcSpanStartCol, srcSpanStartLine, unLoc)
-import TcRnTypes (TcGblEnv (..), TcM)
+import TcRnTypes (ImportAvails (..), TcGblEnv (..), TcM)
 
 import Smuggler.Anns (removeAnnAtLoc, removeTrailingCommas)
+import Smuggler.Compress (compressableAdjacentImports, compressImports)
 import Smuggler.Parser (runParser)
 
 import qualified Data.ByteString as BS
@@ -46,19 +49,22 @@ defaultCol = 120
 smugglerPlugin :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 smugglerPlugin clis modSummary tcEnv = do
     let modulePath = ms_hspp_file modSummary
+    let allImports = (moduleEnvToList . imp_mods) (tcg_imports tcEnv)
 
     uses <- readMutVar (tcg_used_gres tcEnv)
     fileContent <- liftIO $ BS.readFile modulePath
     let modifiedName = munglePath modulePath
 
     liftIO $ void $ hashStore cacheDir
-                              (smuggling uses modulePath)
+                              (smuggling allImports uses modulePath)
                               (modifiedName, fileContent)
 
     pure tcEnv
   where
-    smuggling :: [GlobalRdrElt] -> FilePath -> ByteString -> IO ByteString
-    smuggling uses modulePath fileContents =  do
+    smuggling
+      :: [(Module, [ImportedBy])] -> [GlobalRdrElt]
+      -> FilePath -> ByteString -> IO ByteString
+    smuggling allImports uses modulePath fileContents =  do
         -- 1. Parse given file
         runParser modulePath fileContents >>= \case
             Left () -> pure ()  -- do nothing if file is invalid Haskell
@@ -69,11 +75,16 @@ smugglerPlugin clis modSummary tcEnv = do
                 let unusedPositions = concatMap unusedLocs usage
                 -- 3. Remove positions of unused imports from annotations.
                 let purifiedAnnotations = removeTrailingCommas (foldl' (\ann (x, y) -> removeAnnAtLoc x y ann) anns unusedPositions)
-                let newContent = exactPrint ast purifiedAnnotations
+                -- 4. Compress imports
+                let mergeResults = compressableAdjacentImports user_imports allImports
+                    (L _ hsMod) = ast
+                    parsedImports = hsmodImports hsMod
+                    (anns', ast') = compressImports mergeResults parsedImports [] (purifiedAnnotations, ast)
+                let newContent = exactPrint ast' anns'
                 case clis of
                     []      -> writeFile modulePath newContent
                     (ext:_) -> writeFile (modulePath -<.> ext) newContent
-        -- 4. Return empty ByteString
+        -- 5. Return empty ByteString
         pure ""
 
 unusedLocs ::ImportDeclUsage -> [(Int, Int)]
